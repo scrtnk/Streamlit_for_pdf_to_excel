@@ -8,7 +8,6 @@ import logging
 
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
-# === Helper: Clean Ship To ===
 def extract_ship_to(lines):
     for i, line in enumerate(lines):
         if line.startswith("SHIP TO:"):
@@ -40,7 +39,6 @@ def extract_header_summary(pdf_file):
             ship_to = extract_ship_to(lines)
             vendor_name = extract(r"VENDOR NAME:\s*(.*?)\s+SHIPPING DATE", joined)
             shipping_date = extract(r"SHIPPING DATE:\s*([0-9]{2}/[0-9]{2}/[0-9]{4})", joined)
-
             include_vat = extract(r"INCLUDE VAT\s+([0-9.]+)", joined)
             tax = extract(r"TAX\s+([0-9.]+)", joined)
             usd_total = extract(r"([0-9.]+)\s+USD", joined)
@@ -129,8 +127,97 @@ def clean_table(raw_df):
 
     return cleaned_df
 
+def clean_table_flexible(raw_df):
+    if raw_df.empty or len(raw_df.columns) < 5:
+        return pd.DataFrame()
+
+    desc_col = get_column_index_by_keywords(raw_df, ["DESCRIPTION"])
+    vat_col = desc_col + 1 if desc_col is not None else None
+    unit_size_col = vat_col  # อยู่ row ถัดไป
+    percent_vat_col = get_column_index_by_keywords(raw_df, ["%VAT", "10.00", "10"])
+    pack_size_col = get_column_index_by_keywords(raw_df, ["PACK"])
+
+    unit_qty_col = get_column_index_by_keywords(raw_df, ["UNIT QUANTITY"])
+    unit_price_col = get_column_index_by_keywords(raw_df, ["UNIT PRICE"])
+    amount_col = len(raw_df.columns) - 1
+
+    import re
+    cleaned_rows = []
+
+    for i in range(len(raw_df)-1):
+        row = raw_df.iloc[i]
+        next_row = raw_df.iloc[i + 1]
+
+        if re.match(r"^\d{10,}$", str(row.iloc[0]).strip()):
+            product = str(row.iloc[0]).strip()
+            unit_qty = str(row.iloc[unit_qty_col]).strip() if unit_qty_col is not None else ""
+            try:
+                unit_price = round(float(str(row.iloc[unit_price_col]).strip()), 2)
+            except:
+                unit_price = ""
+
+            try:
+                amount = round(float(str(next_row.iloc[amount_col]).strip()), 2)
+            except:
+                amount = ""
+
+            item_no = str(next_row.iloc[0]).strip()
+            code = str(next_row.iloc[1]).strip()
+            description = str(next_row.iloc[desc_col]).strip() if desc_col is not None else ""
+            if description == "nan":
+                description = str(next_row.iloc[desc_col-1]).strip() if desc_col is not None else ""
+            vat = str(row.iloc[vat_col]).strip() if vat_col is not None else ""
+            unit_size = str(next_row.iloc[unit_size_col]).strip() if unit_size_col is not None else ""
+            if unit_size.lower() == "nan" or unit_size == "":
+                if description:
+                    words = description.strip().split()
+                    if len(words) >= 1:
+                        try:
+                            float(words[-1])  # ถ้าคำสุดท้ายแปลงเป็น float ได้
+                            unit_size = words[-1]
+                        except ValueError:
+                            if len(words) >= 2:
+                                unit_size = f"{words[-2]} {words[-1]}"
+                            else:
+                                unit_size = ""
+            vat_percent = str(row.iloc[percent_vat_col]).strip() if percent_vat_col is not None else ""
+            pack_size = str(row.iloc[pack_size_col]).strip() if pack_size_col is not None else ""
+
+            if not item_no.isdigit():
+                continue
+
+            cleaned_rows.append([
+                item_no,
+                product,
+                code,
+                description,
+                unit_size,
+                unit_qty,
+                unit_price,
+                vat,
+                vat_percent,
+                pack_size,
+                amount
+            ])
+
+    cleaned_df = pd.DataFrame(cleaned_rows, columns=[
+        "Item#",
+        "Product",
+        "Code",
+        "Description",
+        "UNIT_SIZE_DESCRIPTION",
+        "Unit Quantity (Unit/Pack/Case)",
+        "Unit Price (USD)",
+        "VAT",
+        "%VAT",
+        "PACK_SIZE",
+        "Amount (USD)"
+    ])
+
+    return cleaned_df
+
 # === Streamlit UI ===
-st.title("📄 แปลง PDF ใบสั่งซื้อเป็น Excel")
+st.title("📄 แปลง PDF ใบสั่งซื้อเป็น Excel (2 รูปแบบ)")
 
 uploaded_file = st.file_uploader("📤 อัปโหลดไฟล์ PDF", type="pdf")
 
@@ -142,19 +229,69 @@ if uploaded_file:
     header_data, summary_data = extract_header_summary(pdf_path)
     tables = tabula.read_pdf(pdf_path, pages="all", multiple_tables=True)
 
-    # Create Excel
+    # === สร้างไฟล์แยกตามหน้า ===
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as out_xlsx:
         with pd.ExcelWriter(out_xlsx.name, engine="openpyxl") as writer:
             for i, (head, summary) in enumerate(zip(header_data, summary_data)):
                 sheet = f"Page{i+1}"
                 header_df = pd.DataFrame({"Field": list(head.keys()), "Value": list(head.values())})
                 summary_df = pd.DataFrame([summary])
-                table = clean_table(tables[i]) if i < len(tables) else pd.DataFrame()
+                table = clean_table_flexible(tables[i]) if i < len(tables) else pd.DataFrame()
 
                 header_df.to_excel(writer, sheet_name=sheet, index=False, startrow=0)
                 table.to_excel(writer, sheet_name=sheet, index=False, startrow=len(header_df)+2)
                 summary_df.to_excel(writer, sheet_name=sheet, index=False, startrow=len(header_df)+len(table)+4)
 
-        st.success("✅ แปลงเสร็จแล้ว! กดดาวน์โหลดได้เลย")
-        with open(out_xlsx.name, "rb") as f:
-            st.download_button("⬇️ ดาวน์โหลด Excel", f, file_name="output.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with open(out_xlsx.name, "rb") as f1:
+            st.download_button(
+                "⬇️ ดาวน์โหลด Excel แบบแยกตามหน้า",
+                f1,
+                file_name="output_separated.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+    # === สร้างไฟล์แบบสรุปรวม ===
+    combined_rows = []
+    for i, head in enumerate(header_data):
+        if i < len(tables):
+            table = clean_table_flexible(tables[i])
+            for _, row in table.iterrows():
+                combined_rows.append({
+                    'SHIP_TO': head['Ship To'],
+                    'PO_NUMBER': head['PO Number'],
+                    'VENDOR_NAME': head['Vendor Name'],
+                    'PO_DATE': head['Date'],
+                    'DELIVERY_DATE': head['Shipping Date'],
+                    'BARCODE': row['Product'],
+                    'ITEM_ID': row['Code'],
+                    'ITEM_NAME': row['Description'],
+                    'UNIT_SIZE_DESCRIPTION': row['UNIT_SIZE_DESCRIPTION'],
+                    'UNIT_PRICE': row['Unit Price (USD)'],
+                    'VAT': row['VAT'],
+                    '%VAT': row['%VAT'],
+                    'PACK_SIZE': row['PACK_SIZE'],
+                    'UOM_CASE': row['Unit Quantity (Unit/Pack/Case)']
+                })
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as summary_xlsx:
+        with pd.ExcelWriter(summary_xlsx.name, engine="openpyxl") as writer:
+            final_df = pd.DataFrame(combined_rows)
+            final_df.to_excel(writer, sheet_name="Combined Output", index=False)
+
+        with open(summary_xlsx.name, "rb") as f2:
+            st.download_button(
+                "⬇️ ดาวน์โหลด Excel แบบสรุปรวม",
+                f2,
+                file_name="output_summary.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+def get_column_index_by_keywords(df, keywords):
+    for i in range(min(3, len(df))):  # ตรวจแค่ 3 บรรทัดแรก
+        for col_idx, cell in enumerate(df.iloc[i]):
+            if pd.isna(cell): continue
+            text = str(cell).strip().upper()
+            for keyword in keywords:
+                if keyword.upper() in text:
+                    return col_idx
+    return None
