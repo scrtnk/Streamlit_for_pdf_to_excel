@@ -170,14 +170,6 @@ def clean_table_flexible(raw_df):
             else:
                 code = ""
 
-            #description = str(next_row.iloc[desc_col]).strip() if desc_col is not None else ""
-            #if description :
-            #    description = str(next_row.iloc[desc_col-1]).strip() if desc_col is not None else ""
-            #if description.lower() == "nan":
-            #    description = str(next_row.iloc[desc_col-2]).strip() if desc_col is not None else ""
-            #if code and description.startswith(code):
-            #    description = description[len(code):].strip()
-
             # --- Description fallback logic ---
             invalid_vals = ["", "nan"]
 
@@ -240,30 +232,6 @@ def clean_table_flexible(raw_df):
                     vat = str(next_row.iloc[vat_col+1]).strip() if vat_col is not None else ""
                 if vat == "nan":
                     vat = "EXC"
-            
-            #unit_size = str(next_row.iloc[unit_size_col]).strip() if unit_size_col is not None else ""
-            #if unit_size.lower() == "nan" or unit_size == "":
-            #    if description:
-            #        words = description.strip().split()
-            #        if len(words) >= 1:
-            #            last_word = words[-1]
-            #            try:
-            #                float(last_word)  # ถ้าแปลงได้ตรงๆ เป็น float
-            #                unit_size = last_word
-            #            except ValueError:
-            #                # ตรวจว่ามีตัวเลขแบบ float อยู่ในคำไหม เช่น "100ml" หรือ "25.5kg"
-            #                import re
-            #                match = re.search(r"\d+(\.\d+)?", last_word)
-            #                if match:
-            #                    unit_size = last_word
-            #                elif len(words) >= 2:
-            #                    unit_size = f"{words[-2]} {words[-1]}"
-            #                else:
-            #                    unit_size = ""
-            #if unit_size == "nan":
-            #    unit_size = str(next_row.iloc[unit_size_col+1]).strip() if unit_size_col is not None else ""
-            #if description == unit_price:
-            #    description = str(next_row.iloc[2]).strip() if desc_col is not None else ""
             if code and description.startswith(code):
                 description = description[len(code):].strip()
             vat_percent = str(row.iloc[percent_vat_col]).strip() if percent_vat_col is not None else ""
