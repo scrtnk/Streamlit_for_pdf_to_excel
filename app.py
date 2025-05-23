@@ -5,6 +5,7 @@ import tabula
 import tempfile
 import re
 import logging
+import io
 
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
@@ -127,12 +128,11 @@ def clean_table(raw_df):
 
     return cleaned_df
 
+
 def clean_table_flexible(raw_df):
     if raw_df.empty or len(raw_df.columns) < 5:
         return pd.DataFrame()
-    print(raw_df)
     desc_col = get_column_index_by_keywords(raw_df, ["DESCRIPTION"])
-    print(desc_col)
     if desc_col is None:
         desc_col = 2
     vat_col = desc_col + 1 if desc_col is not None else None
@@ -169,40 +169,101 @@ def clean_table_flexible(raw_df):
                 code = match.group()
             else:
                 code = ""
-            description = str(next_row.iloc[desc_col]).strip() if desc_col is not None else ""
-            print(description)
-            if description :
-                description = str(next_row.iloc[desc_col-1]).strip() if desc_col is not None else ""
-                if description.lower() == "nan":
-                    description = str(next_row.iloc[desc_col-2]).strip() if desc_col is not None else ""
-            if code and description.startswith(code):
-                description = description[len(code):].strip()
+
+            #description = str(next_row.iloc[desc_col]).strip() if desc_col is not None else ""
+            #if description :
+            #    description = str(next_row.iloc[desc_col-1]).strip() if desc_col is not None else ""
+            #if description.lower() == "nan":
+            #    description = str(next_row.iloc[desc_col-2]).strip() if desc_col is not None else ""
+            #if code and description.startswith(code):
+            #    description = description[len(code):].strip()
+
+            # --- Description fallback logic ---
+            invalid_vals = ["", "nan"]
+
+            def is_invalid(val):
+                return str(val).strip().lower() in invalid_vals
+
+            description = ""
+            if desc_col is not None:
+                candidates = [
+                    next_row.iloc[desc_col] if desc_col < len(next_row) else "",
+                    next_row.iloc[desc_col - 1] if desc_col - 1 >= 0 else "",
+                    next_row.iloc[2] if 2 < len(next_row) else "",
+                    next_row.iloc[1] if 1 < len(next_row) else "",  # last resort
+                ]
+                for candidate in candidates:
+                    candidate_str = str(candidate).strip()
+                    if not is_invalid(candidate_str):
+                        description = candidate_str
+                        break
+
+            # --- Unit size fallback ---
+            unit_size = ""
+            if unit_size_col is not None and unit_size_col < len(next_row):
+                unit_size = str(next_row.iloc[unit_size_col]).strip()
+
+            # Try parsing from description if not valid
+            if not unit_size or unit_size.lower() == "nan":
+                words = description.strip().split()
+                if len(words) >= 1:
+                    last_word = words[-1]
+                    try:
+                        float(last_word)  # ถ้าแปลงได้ตรงๆ เป็น float
+                        unit_size = last_word
+                    except ValueError:
+                        # ตรวจว่ามีตัวเลขแบบ float อยู่ในคำไหม เช่น "100ml" หรือ "25.5kg"
+                        import re
+                        match = re.search(r"\d+(\.\d+)?", last_word)
+                        if match:
+                            unit_size = last_word
+                        elif len(words) >= 2:
+                            unit_size = f"{words[-2]} {words[-1]}"
+                        else:
+                            unit_size = ""
+
+            # --- Optional: Clean unit size if it still looks off ---
+            if unit_size.lower() == "nan":
+                try:
+                    unit_size = str(next_row.iloc[unit_size_col + 1]).strip()
+                except:
+                    unit_size = ""
+
+            # --- Fix description again if it’s just unit size ---
+            if description == unit_size:
+                description = str(next_row.iloc[2]).strip()
+
             vat = str(row.iloc[vat_col]).strip() if vat_col is not None else ""
             if vat == "nan":
                 vat = str(next_row.iloc[vat_col]).strip() if vat_col is not None else ""
-            unit_size = str(next_row.iloc[unit_size_col]).strip() if unit_size_col is not None else ""
-            if unit_size.lower() == "nan" or unit_size == "":
-                if description:
-                    words = description.strip().split()
-                    if len(words) >= 1:
-                        last_word = words[-1]
-                        try:
-                            float(last_word)  # ถ้าแปลงได้ตรงๆ เป็น float
-                            unit_size = last_word
-                        except ValueError:
-                            # ตรวจว่ามีตัวเลขแบบ float อยู่ในคำไหม เช่น "100ml" หรือ "25.5kg"
-                            import re
-                            match = re.search(r"\d+(\.\d+)?", last_word)
-                            if match:
-                                unit_size = last_word
-                            elif len(words) >= 2:
-                                unit_size = f"{words[-2]} {words[-1]}"
-                            else:
-                                unit_size = ""
-            if unit_size == "nan":
-                unit_size = str(next_row.iloc[unit_size_col+1]).strip() if unit_size_col is not None else ""
-            if description == unit_price:
-                description = str(next_row.iloc[2]).strip() if desc_col is not None else ""
+                if not isinstance(vat, str):
+                    vat = str(next_row.iloc[vat_col+1]).strip() if vat_col is not None else ""
+                if vat == "nan":
+                    vat = "EXC"
+            
+            #unit_size = str(next_row.iloc[unit_size_col]).strip() if unit_size_col is not None else ""
+            #if unit_size.lower() == "nan" or unit_size == "":
+            #    if description:
+            #        words = description.strip().split()
+            #        if len(words) >= 1:
+            #            last_word = words[-1]
+            #            try:
+            #                float(last_word)  # ถ้าแปลงได้ตรงๆ เป็น float
+            #                unit_size = last_word
+            #            except ValueError:
+            #                # ตรวจว่ามีตัวเลขแบบ float อยู่ในคำไหม เช่น "100ml" หรือ "25.5kg"
+            #                import re
+            #                match = re.search(r"\d+(\.\d+)?", last_word)
+            #                if match:
+            #                    unit_size = last_word
+            #                elif len(words) >= 2:
+            #                    unit_size = f"{words[-2]} {words[-1]}"
+            #                else:
+            #                    unit_size = ""
+            #if unit_size == "nan":
+            #    unit_size = str(next_row.iloc[unit_size_col+1]).strip() if unit_size_col is not None else ""
+            #if description == unit_price:
+            #    description = str(next_row.iloc[2]).strip() if desc_col is not None else ""
             if code and description.startswith(code):
                 description = description[len(code):].strip()
             vat_percent = str(row.iloc[percent_vat_col]).strip() if percent_vat_col is not None else ""
@@ -246,73 +307,82 @@ st.title("📄 แปลง PDF ใบสั่งซื้อเป็น Excel
 
 uploaded_file = st.file_uploader("📤 อัปโหลดไฟล์ PDF", type="pdf")
 
-if uploaded_file:
-    if st.button("▶️ เริ่มประมวลผล"):
-            with st.spinner("⏳ กำลังประมวลผล..."):
+if uploaded_file and "last_uploaded" in st.session_state:
+    if uploaded_file.name != st.session_state["last_uploaded"]:
+        st.session_state.pop("separated_excel", None)
+        st.session_state.pop("summary_excel", None)
+st.session_state["last_uploaded"] = uploaded_file.name if uploaded_file else None
 
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    tmp.write(uploaded_file.read())
-                    pdf_path = tmp.name
+if uploaded_file and st.button("▶️ เริ่มประมวลผล"):
+    with st.spinner("⏳ กำลังประมวลผล..."):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(uploaded_file.read())
+            pdf_path = tmp.name
 
-                header_data, summary_data = extract_header_summary(pdf_path)
-                tables = tabula.read_pdf(pdf_path, pages="all", multiple_tables=True)
+        header_data, summary_data = extract_header_summary(pdf_path)
+        tables = tabula.read_pdf(pdf_path, pages="all", multiple_tables=True)
 
-                # === สร้างไฟล์แยกตามหน้า ===
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as out_xlsx:
-                    with pd.ExcelWriter(out_xlsx.name, engine="openpyxl") as writer:
-                        for i, (head, summary) in enumerate(zip(header_data, summary_data)):
-                            sheet = f"Page{i+1}"
-                            header_df = pd.DataFrame({"Field": list(head.keys()), "Value": list(head.values())})
-                            summary_df = pd.DataFrame([summary])
-                            table = clean_table_flexible(tables[i]) if i < len(tables) else pd.DataFrame()
+        # === สร้าง Excel แยกตามหน้า ===
+        separated_buffer = io.BytesIO()
+        with pd.ExcelWriter(separated_buffer, engine="openpyxl") as writer:
+            for i, (head, summary) in enumerate(zip(header_data, summary_data)):
+                sheet = f"Page{i+1}"
+                header_df = pd.DataFrame({"Field": list(head.keys()), "Value": list(head.values())})
+                summary_df = pd.DataFrame([summary])
+                table = clean_table_flexible(tables[i]) if i < len(tables) else pd.DataFrame()
 
-                            header_df.to_excel(writer, sheet_name=sheet, index=False, startrow=0)
-                            table.to_excel(writer, sheet_name=sheet, index=False, startrow=len(header_df)+2)
-                            summary_df.to_excel(writer, sheet_name=sheet, index=False, startrow=len(header_df)+len(table)+4)
+                header_df.to_excel(writer, sheet_name=sheet, index=False, startrow=0)
+                table.to_excel(writer, sheet_name=sheet, index=False, startrow=len(header_df)+2)
+                summary_df.to_excel(writer, sheet_name=sheet, index=False, startrow=len(header_df)+len(table)+4)
+        separated_buffer.seek(0)
+        st.session_state["separated_excel"] = separated_buffer.getvalue()
 
-                    with open(out_xlsx.name, "rb") as f1:
-                        st.download_button(
-                            "⬇️ ดาวน์โหลด Excel แบบแยกตามหน้า",
-                            f1,
-                            file_name="output_separated.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+        # === สร้าง Excel สรุปรวม ===
+        combined_rows = []
+        for i, head in enumerate(header_data):
+            if i < len(tables):
+                table = clean_table_flexible(tables[i])
+                for _, row in table.iterrows():
+                    combined_rows.append({
+                        'SHIP_TO': head['Ship To'],
+                        'PO_NUMBER': head['PO Number'],
+                        'VENDOR_NAME': head['Vendor Name'],
+                        'PO_DATE': head['Date'],
+                        'DELIVERY_DATE': head['Shipping Date'],
+                        'BARCODE': row['Product'],
+                        'ITEM_ID': row['Code'],
+                        'ITEM_NAME': row['Description'],
+                        'UNIT_SIZE_DESCRIPTION': row['UNIT_SIZE_DESCRIPTION'],
+                        'UNIT_PRICE': row['Unit Price (USD)'],
+                        'VAT': row['VAT'],
+                        '%VAT': row['%VAT'],
+                        'PACK_SIZE': row['PACK_SIZE'],
+                        'UOM_CASE': row['Unit Quantity (Unit/Pack/Case)']
+                    })
 
-                # === สร้างไฟล์แบบสรุปรวม ===
-                combined_rows = []
-                for i, head in enumerate(header_data):
-                    if i < len(tables):
-                        table = clean_table_flexible(tables[i])
-                        for _, row in table.iterrows():
-                            combined_rows.append({
-                                'SHIP_TO': head['Ship To'],
-                                'PO_NUMBER': head['PO Number'],
-                                'VENDOR_NAME': head['Vendor Name'],
-                                'PO_DATE': head['Date'],
-                                'DELIVERY_DATE': head['Shipping Date'],
-                                'BARCODE': row['Product'],
-                                'ITEM_ID': row['Code'],
-                                'ITEM_NAME': row['Description'],
-                                'UNIT_SIZE_DESCRIPTION': row['UNIT_SIZE_DESCRIPTION'],
-                                'UNIT_PRICE': row['Unit Price (USD)'],
-                                'VAT': row['VAT'],
-                                '%VAT': row['%VAT'],
-                                'PACK_SIZE': row['PACK_SIZE'],
-                                'UOM_CASE': row['Unit Quantity (Unit/Pack/Case)']
-                            })
+        summary_buffer = io.BytesIO()
+        with pd.ExcelWriter(summary_buffer, engine="openpyxl") as writer:
+            final_df = pd.DataFrame(combined_rows)
+            final_df.to_excel(writer, sheet_name="Combined Output", index=False)
+        summary_buffer.seek(0)
+        st.session_state["summary_excel"] = summary_buffer.getvalue()
 
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as summary_xlsx:
-                    with pd.ExcelWriter(summary_xlsx.name, engine="openpyxl") as writer:
-                        final_df = pd.DataFrame(combined_rows)
-                        final_df.to_excel(writer, sheet_name="Combined Output", index=False)
+# === Download buttons appear independently ===
+if "separated_excel" in st.session_state and uploaded_file:
+    st.download_button(
+        "⬇️ ดาวน์โหลด Excel แบบแยกตามหน้า",
+        st.session_state["separated_excel"],
+        file_name="output_separated.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
-                    with open(summary_xlsx.name, "rb") as f2:
-                        st.download_button(
-                            "⬇️ ดาวน์โหลด Excel แบบสรุปรวม",
-                            f2,
-                            file_name="output_summary.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+if "summary_excel" in st.session_state and uploaded_file:
+    st.download_button(
+        "⬇️ ดาวน์โหลด Excel แบบสรุปรวม",
+        st.session_state["summary_excel"],
+        file_name="output_summary.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 def get_column_index_by_keywords(df, keywords):
     for i in range(min(3, len(df))):  # ตรวจแค่ 3 บรรทัดแรก
